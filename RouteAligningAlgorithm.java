@@ -1,5 +1,5 @@
 /**
- * Author: Anirudh Ray
+ * Authors: Anirudh Ray and Matthias Länger
  * Institution: Professorship of Travel Behaviour, Technical University of Munich
  * Department: Mobility Systems Engineering, School of Engineering and Design
  * E-mail Address: Anirudh.Ray@tum.de
