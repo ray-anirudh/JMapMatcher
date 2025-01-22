@@ -7,11 +7,15 @@
  */
 
 import DijkstraAlgorithm.*;
-import GPSDataManager.*;
+import GPSDataManager.GPSNode;
+import GPSDataManager.GPSNodeReaderWriter;
 import KDTreeManager.KDTreeBuilderSearcher;
-import OSMDataManager.*;
+import OSMDataManager.NetworkNode;
+import OSMDataManager.NetworkNodeReader;
 
-import java.io.*;
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.*;
 
 public class RouteAligningAlgorithm {
@@ -19,13 +23,14 @@ public class RouteAligningAlgorithm {
         String gPSNodesFilePath = "E:/anirudh/CargoBikeProject/RawData/GPSData/2024-09-04_GPSrecords_edited.csv";
         String hMMNodesFilePath = "E:/anirudh/CargoBikeProject/RawData/Osmium/" +
                 "OSMRoadNetworkForCargoBikes1mPointsHMM.csv";
-        String dijkstraLinksFilePath = "E:/anirudh/CargoBikeProject/Results/dijkstraLinks.csv";
-        String dijkstraNodesFilePath = "E:/anirudh/CargoBikeProject/Results/dijkstraNodes.csv";
+        // String dijkstraLinksFilePath = "E:/anirudh/CargoBikeProject/Results/dijkstraLinks.csv";
+        // String dijkstraNodesFilePath = "E:/anirudh/CargoBikeProject/Results/dijkstraNodes.csv";
         int numberNeighbouringNetworkNodesCompared = 70;
         String routingNetworkFilePath = "E:/anirudh/CargoBikeProject/RawData/Osmium/" +
                 "planet_11.229,48_11.914,48.278.osm.opl";
         String snappedGPSNodesFilePath = "E:/anirudh/CargoBikeProject/Results/gPSNodesSnapped.csv";
         String pathNodesFilePath = "E:/anirudh/CargoBikeProject/Results/pathNodes.csv";
+        String shortestPathNodesFilePath = "E:/anirudh/CargoBikeProject/Results/shortestPathNodes.csv";
 
         // Load all GPS nodes to be snapped
         GPSNodeReaderWriter gpsNodeReaderWriter = new GPSNodeReaderWriter();
@@ -50,27 +55,27 @@ public class RouteAligningAlgorithm {
         osmDataReaderWriter.calculateLinkLengthsM();
         LinkedHashMap<Long, Node> nodes = osmDataReaderWriter.getNodes();
         LinkedHashMap<Long, Link> links = osmDataReaderWriter.getLinks();
+        Node[] nodesForSnapping = nodes.values().toArray(new Node[0]);
+        KDTreeForNodes kDTreeForDijkstra = new KDTreeForNodes();
+        kDTreeForDijkstra.buildNodeBasedKDTree(nodesForSnapping);
         // osmDataReaderWriter.writeDijkstraLinks(dijkstraLinksFilePath);
         // osmDataReaderWriter.writeDijkstraNodes(dijkstraNodesFilePath);
-        LinkedHashMap<Integer, Node> pathSequenceNodes = new LinkedHashMap<>();
-
-        Node[] nodesForSnapping = nodes.values().toArray(new Node[0]);
-        KDTreeForNodes kdTreeForNodes = new KDTreeForNodes();
-        kdTreeForNodes.buildNodeBasedKDTree(nodesForSnapping);
+        LinkedHashMap<Integer, Node> gPSPointPathSequenceNodes = new LinkedHashMap<>();
+        LinkedHashMap<Integer, Node> gPSPointIsStopPathSequenceNodes = new LinkedHashMap<>();
 
         // Find the candidate network nodes for each GPS node, i.e., carry out map matching
         KDTreeBuilderSearcher kdTreeBuilderSearcher = new KDTreeBuilderSearcher();
-        NetworkNode[] networkNodesForKDTree = networkNodes.values().toArray(new NetworkNode[0]);
-        kdTreeBuilderSearcher.buildNodeBasedKDTree(networkNodesForKDTree);
+        NetworkNode[] kDTreeForHMM = networkNodes.values().toArray(new NetworkNode[0]);
+        kdTreeBuilderSearcher.buildNodeBasedKDTree(kDTreeForHMM);
 
         NetworkNode previousState = null;
-        long jointProbabilityCounter = 0;
         for (GPSNode gPSNode : gPSNodes.values()) {
-            // System.out.println("GPS node ID: " + gPSNode.getGPSNodeId());
+            // System.out.println("GPS node ID: " + gPSNode.getGPSNodeId());    // Debugging statement
             List<NetworkNode> candidateStateNodes = kdTreeBuilderSearcher.findNearestNodes(gPSNode.
                     getGPSNodeLongitude(), gPSNode.getGPSNodeLatitude(), numberNeighbouringNetworkNodesCompared);
             gPSNode.getCandidateStateNodes().addAll(candidateStateNodes);
             gPSNode.setEmissionProbabilities(calculateEmissionProbabilities(gPSNode));
+
             ArrayList<Double> emissionProbabilities = gPSNode.getEmissionProbabilities();
             double maximumJointProbability = -1;    // Set to -1 from 0; algorithmic intervention
             int indexOfSelectedState = 0;
@@ -100,269 +105,233 @@ public class RouteAligningAlgorithm {
                 }
             }
 
-            previousState = candidateStateNodes.get(indexOfSelectedState);
-            gPSNode.setMatchedNodeLongitude(previousState.getNetworkNodeLongitude());
-            gPSNode.setMatchedNodeLatitude(previousState.getNetworkNodeLatitude());
-            gPSNode.setMatchedNodeOsmWayId(previousState.getRoadOsmId());
+            NetworkNode currentState = candidateStateNodes.get(indexOfSelectedState);
+            gPSNode.setMatchedNodeLongitude(currentState.getNetworkNodeLongitude());
+            gPSNode.setMatchedNodeLatitude(currentState.getNetworkNodeLatitude());
+            gPSNode.setMatchedNodeOsmWayId(currentState.getRoadOsmId());
             gPSNode.setJointProbability(maximumJointProbability);
             gPSNode.setMatchedNodeElevationM(0);
+            previousState = currentState;
         }
 
+        // Route between different network nodes (states) and feed the sequencing arraylists to the master map
+        GPSNode previousGPSNode = gPSNodes.get(1L);
+        gPSNodes.get(1L).setDistanceFromPreviousGPSPointM(0);
+
+        Node previousPathNode = kDTreeForDijkstra.findNearestNode(gPSNodes.get(1L).getMatchedNodeLongitude(),
+                gPSNodes.get(1L).getMatchedNodeLatitude());// First record handling
+        int pathNodeFeatureId = 1;
+        long osmWayIdToAscribe = 0L;
+        double distanceFromPreviousFeatureM = 0;
+
         try {
-            // Set up a writer instance
-            BufferedWriter pathNodeWriter = new BufferedWriter(new FileWriter(pathNodesFilePath));
-
-            // Write out the header
-            pathNodeWriter.write("FeatureId,OSMNodeId,FeatureLongitude,FeatureLatitude,FromGPSPointId," +
-                    "ToGPSPointId,FromGPSPointLongitude,FromGPSPointLatitude,ToGPSPointLongitude,ToGPSPointLatitude," +
-                    "FromGPSPointDateTime,ToGPSPointDateTime,FromGPSPointAtDepot,FromGPSPointAtDepotLag," +
-                    "FromGPSPointAtDepotNext,FromGPSPointHubStay,FromGPSPointHubStart,FromGPSPointHubStop," +
-                    "FromGPSPointTourNumber,FromGPSPointIsStop,OSMWayId,DistanceFromPreviousFeature,IsIntersection," +
-                    "\n");
-
-            // Route between different network nodes (states) and feed the arraylists to the master map
-            int nodeSequenceCounter = 1;
-            gPSNodes.get(1L).setDistanceFromPreviousPointM(0);  // Set starting point's distance to its predecessor as zero
-            pathSequenceNodes.put(1, kdTreeForNodes.findNearestNode(gPSNodes.get(1L).getMatchedNodeLongitude(),
-                    gPSNodes.get(1L).getMatchedNodeLatitude()));    // Initial value handling
-            GPSNode previousNode = null;
-            Node previousNetworkNode = null;
-            long osmWayIdToAscribe = 0L;
-            double distanceFromPreviousFeatureM = 0;
-
             for (GPSNode gPSNode : gPSNodes.values()) {
+                if (gPSNode.getGPSNodeId() == 1L) {
+                    continue;
+                }
+
+                BufferedWriter pathNodeWriter = new BufferedWriter(new FileWriter(pathNodesFilePath));
+                pathNodeWriter.write("FeatureId,OSMNodeId,FeatureLongitude,FeatureLatitude,FromGPSPointId," +
+                        "ToGPSPointId,FromGPSPointLongitude,FromGPSPointLatitude,ToGPSPointLongitude," +
+                        "ToGPSPointLatitude,FromGPSPointDateTime,ToGPSPointDateTime,FromGPSPointAtDepot," +
+                        "FromGPSPointAtDepotLag,FromGPSPointAtDepotNext,FromGPSPointHubStay,FromGPSPointHubStart," +
+                        "FromGPSPointHubStop,FromGPSPointTourNumber,FromGPSPointIsStop,OSMWayId," +
+                        "DistanceFromPreviousFeature,IsIntersection\n");
+
+                // Initialize the routing architecture
+                DijkstraBasedRouter dijkstraBasedRouter = new DijkstraBasedRouter();
+                Node previousRoutingNode = kDTreeForDijkstra.findNearestNode(previousGPSNode.
+                        getMatchedNodeLongitude(), previousGPSNode.getMatchedNodeLatitude());
+                Node currentRoutingNode = kDTreeForDijkstra.findNearestNode(gPSNode.getMatchedNodeLongitude(),
+                        gPSNode.getMatchedNodeLatitude());
+                // System.out.println(previousGPSNode);
                 // System.out.println(gPSNode.getgPSNodeTourNumber());  // Debugging statement
-                if (previousNode != null) {
-                    // Initialize a routing engine
-                    DijkstraBasedRouter dijkstraBasedRouter = new DijkstraBasedRouter();
 
-                    // Ready the nodes to be routed to and from
-                    Node previousRoutingNode = kdTreeForNodes.findNearestNode(previousNode.getMatchedNodeLongitude(),
-                            previousNode.getMatchedNodeLatitude());
-                    Node currentRoutingNode = kdTreeForNodes.findNearestNode(gPSNode.getMatchedNodeLongitude(),
+                // Find the inter-nodal distance between consecutive GPS nodes
+                double interPointDistance = dijkstraBasedRouter.findShortestDrivingPathLengthM(
+                        previousRoutingNode.getNodeId(), currentRoutingNode.getNodeId(), nodes, links);
+                gPSNode.setDistanceFromPreviousGPSPointM(interPointDistance);
+
+                // Set up an arraylist of points between consecutive GPS nodes, and populate the master list accordingly
+                ArrayList<Node> nodeSequenceTraversed = dijkstraBasedRouter.createNodeListForTraversal(
+                        previousRoutingNode.getNodeId(), currentRoutingNode.getNodeId(), nodes);
+                // if (nodeSequenceTraversed != null) System.out.println(gPSNode.getgPSNodeTourNumber()); // Debugger
+
+                Node intermediateNode;
+                if (nodeSequenceTraversed.isEmpty()) {
+                    intermediateNode = kDTreeForDijkstra.findNearestNode(gPSNode.getMatchedNodeLongitude(),
                             gPSNode.getMatchedNodeLatitude());
-                    // System.out.println(previousNode);
+                    boolean isIntersection = false;
 
-                    // Find the inter-nodal distance between consecutive GPS nodes
-                    double interPointDistance = dijkstraBasedRouter.findShortestDrivingPathLengthM(
-                            previousRoutingNode.getNodeId(), currentRoutingNode.getNodeId(), nodes, links);
-                    gPSNode.setDistanceFromPreviousPointM(interPointDistance);
+                    osmWayIdToAscribe = intermediateNode.getLinkIdList().get(0);
+                    distanceFromPreviousFeatureM = intermediateNode.equiRectangularDistanceTo(previousPathNode.
+                            getNodeLongitude(), previousPathNode.getNodeLatitude());
 
-                    // Set up an arraylist of points between consecutive GPS nodes, and populate the master list accordingly
-                    ArrayList<Node> nodeSequenceTraversed = dijkstraBasedRouter.createNodeListForTraversal(
-                            previousRoutingNode.getNodeId(), currentRoutingNode.getNodeId(), nodes);
-                    // if (nodeSequenceTraversed != null) System.out.println(gPSNode.getgPSNodeTourNumber()); // Debugger
 
-                    // TODO IF NODESEQUENCE TRAVSERSED IS NULL
+                    intermediateNode.setPreviousGPSNodeId(previousGPSNode.getGPSNodeId());
+                    intermediateNode.setNextGPSNodeId(gPSNode.getGPSNodeId());
+                    intermediateNode.setPreviousGPSNodeLongitude(previousGPSNode.getGPSNodeLongitude());
+                    intermediateNode.setPreviousGPSNodeLatitude(previousGPSNode.getGPSNodeLatitude());
+                    intermediateNode.setPreviousGPSNodeDateTime(previousGPSNode.getDateTimeStamp());
+                    intermediateNode.setNextGPSNodeDateTime(gPSNode.getDateTimeStamp());
+                    intermediateNode.setNextGPSNodeLongitude(gPSNode.getGPSNodeLongitude());
+                    intermediateNode.setNextGPSNodeLatitude(gPSNode.getGPSNodeLatitude());
+                    intermediateNode.setPreviousGPSNodeAtDepot(previousGPSNode.getgPSNodeAtDepot());
+                    intermediateNode.setPreviousGPSNodeAtDepotLag(previousGPSNode.getgPSNodeAtDepotLag());
+                    intermediateNode.setPreviousGPSNodeAtDepotNext(previousGPSNode.getgPSNodeAtDepotNext());
+                    intermediateNode.setPreviousGPSNodeHubStay(previousGPSNode.getgPSNodeHubStay());
+                    intermediateNode.setPreviousGPSNodeHubStart(previousGPSNode.getgPSNodeHubStart());
+                    intermediateNode.setPreviousGPSNodeHubStop(previousGPSNode.getgPSNodeHubStop());
+                    intermediateNode.setTourNumber(previousGPSNode.getgPSNodeTourNumber());
+                    intermediateNode.setPreviousGPSNodeIsStop(previousGPSNode.getgPSNodeIsStop());
+                    intermediateNode.setOsmWayIdAscribedForRoute(osmWayIdToAscribe);
+                    intermediateNode.setDistanceToPreviousNetworkNode(distanceFromPreviousFeatureM);
+                    intermediateNode.setIsIntersection(isIntersection);
 
-                    Node intermediateNode;
+                    gPSPointPathSequenceNodes.put(++pathNodeFeatureId, intermediateNode);
 
-                    if (nodeSequenceTraversed.isEmpty()) {
-                        intermediateNode = kdTreeForNodes.findNearestNode(gPSNode.getMatchedNodeLongitude(),
-                                gPSNode.getMatchedNodeLatitude());
-                        boolean isIntersection = false;
-                        long linkIdToCheckClass = 0;
+                    if (gPSNode.getgPSNodeTourNumber() <= 1032) {
+                        pathNodeWriter.write(
+                                (pathNodeFeatureId - 1) + "," +
+                                    intermediateNode.getNodeId() + "," +
+                                    intermediateNode.getNodeLongitude() + "," +
+                                    intermediateNode.getNodeLatitude() + "," +
+                                    intermediateNode.getPreviousGPSNodeId() + "," +
+                                    intermediateNode.getNextGPSNodeId() + "," +
+                                    intermediateNode.getPreviousGPSNodeLongitude() + "," +
+                                    intermediateNode.getPreviousGPSNodeLatitude() + "," +
+                                    intermediateNode.getNextGPSNodeLongitude() + "," +
+                                    intermediateNode.getNextGPSNodeLatitude() + "," +
+                                    intermediateNode.getPreviousGPSNodeDateTime() + "," +
+                                    intermediateNode.getNextGPSNodeDateTime() + "," +
+                                    intermediateNode.getPreviousGPSNodeAtDepot() + "," +
+                                    intermediateNode.getPreviousGPSNodeAtDepotLag() + "," +
+                                    intermediateNode.getPreviousGPSNodeAtDepotNext() + "," +
+                                    intermediateNode.getPreviousGPSNodeHubStay() + "," +
+                                    intermediateNode.getPreviousGPSNodeHubStart() + "," +
+                                    intermediateNode.getPreviousGPSNodeHubStop() + "," +
+                                    intermediateNode.getTourNumber() + "," +
+                                    intermediateNode.getPreviousGPSNodeIsStop() + "," +
+                                    intermediateNode.getOsmWayIdAscribedForRoute() + "," +
+                                    intermediateNode.getDistanceToPreviousNetworkNode() + "," +
+                                    intermediateNode.isIntersection() + "\n");
+                    }
+                    previousPathNode = intermediateNode;
+                }
 
-                        if (previousNetworkNode != null) {
-                            osmWayIdToAscribe = intermediateNode.getLinkIdList().get(0);
-                            distanceFromPreviousFeatureM = intermediateNode.equiRectangularDistanceTo(previousNetworkNode.
-                                    getNodeLongitude(), previousNetworkNode.getNodeLatitude());
+                for (int i = nodeSequenceTraversed.size() - 1; i >= 0; i--) {
+                    intermediateNode = nodeSequenceTraversed.get(i);
+                    boolean isIntersection = false;
+                    long linkIdToCheckClass = 0L;
+
+                    boolean breakOuterLoop = false;
+                    for (Long linkIdFromPreviousNode : previousPathNode.getLinkIdList()) {
+                        for (Long linkIdFromCurrentNode : intermediateNode.getLinkIdList()) {
+                            if (Objects.equals(linkIdFromPreviousNode, linkIdFromCurrentNode)) {
+                                osmWayIdToAscribe = links.get(linkIdFromPreviousNode).getOsmWayId();
+                                distanceFromPreviousFeatureM = links.get(linkIdFromPreviousNode).
+                                        getlinkLengthM();
+                                linkIdToCheckClass = linkIdFromPreviousNode;
+                                breakOuterLoop = true;
+                            }
                         }
-
-                        intermediateNode.setPreviousGPSNodeId(previousNode.getGPSNodeId());
-                        intermediateNode.setNextGPSNodeId(gPSNode.getGPSNodeId());
-                        intermediateNode.setPreviousGPSNodeLongitude(previousNode.getGPSNodeLongitude());
-                        intermediateNode.setPreviousGPSNodeLatitude(previousNode.getGPSNodeLatitude());
-                        intermediateNode.setPreviousGPSNodeDateTime(previousNode.getDateTimeStamp());
-                        intermediateNode.setNextGPSNodeDateTime(gPSNode.getDateTimeStamp());
-                        intermediateNode.setNextGPSNodeLongitude(gPSNode.getGPSNodeLongitude());
-                        intermediateNode.setNextGPSNodeLatitude(gPSNode.getGPSNodeLatitude());
-                        intermediateNode.setPreviousGPSNodeAtDepot(previousNode.getgPSNodeAtDepot());
-                        intermediateNode.setPreviousGPSNodeAtDepotLag(previousNode.getgPSNodeAtDepotLag());
-                        intermediateNode.setPreviousGPSNodeAtDepotNext(previousNode.getgPSNodeAtDepotNext());
-                        intermediateNode.setPreviousGPSNodeHubStay(previousNode.getgPSNodeHubStay());
-                        intermediateNode.setPreviousGPSNodeHubStart(previousNode.getgPSNodeHubStart());
-                        intermediateNode.setPreviousGPSNodeHubStop(previousNode.getgPSNodeHubStop());
-                        intermediateNode.setTourNumber(previousNode.getgPSNodeTourNumber());
-                        // System.out.println(nodeSequenceCounter + "," + previousNode.getgPSNodeTourNumber());
-                        intermediateNode.setPreviousGPSNodeIsStop(previousNode.getgPSNodeIsStop());
-                        intermediateNode.setOsmWayIdAscribedForRoute(osmWayIdToAscribe);
-                        intermediateNode.setDistanceToPreviousNetworkNode(distanceFromPreviousFeatureM);
-                        intermediateNode.setIsIntersection(isIntersection);
-
-                        pathSequenceNodes.put(++nodeSequenceCounter, intermediateNode);
-
-                        if (gPSNode.getgPSNodeTourNumber() <= 1032) {   // todo earlier is was nodeSequenceCounter % 301_122
-                            pathNodeWriter.write(
-                                    (nodeSequenceCounter - 1) + "," +
-                                            intermediateNode.getNodeId() + "," +
-                                            intermediateNode.getNodeLongitude() + "," +
-                                            intermediateNode.getNodeLatitude() + "," +
-                                            intermediateNode.getPreviousGPSNodeId() + "," +
-                                            intermediateNode.getNextGPSNodeId() + "," +
-                                            intermediateNode.getPreviousGPSNodeLongitude() + "," +
-                                            intermediateNode.getPreviousGPSNodeLatitude() + "," +
-                                            intermediateNode.getNextGPSNodeLongitude() + "," +
-                                            intermediateNode.getNextGPSNodeLatitude() + "," +
-                                            intermediateNode.getPreviousGPSNodeDateTime() + "," +
-                                            intermediateNode.getNextGPSNodeDateTime() + "," +
-                                            intermediateNode.getPreviousGPSNodeAtDepot() + "," +
-                                            intermediateNode.getPreviousGPSNodeAtDepotLag() + "," +
-                                            intermediateNode.getPreviousGPSNodeAtDepotNext() + "," +
-                                            intermediateNode.getPreviousGPSNodeHubStay() + "," +
-                                            intermediateNode.getPreviousGPSNodeHubStart() + "," +
-                                            intermediateNode.getPreviousGPSNodeHubStop() + "," +
-                                            intermediateNode.getTourNumber() + "," +
-                                            intermediateNode.getPreviousGPSNodeIsStop() + "," +
-                                            intermediateNode.getOsmWayIdAscribedForRoute() + "," +
-                                            intermediateNode.getDistanceToPreviousNetworkNode() + "," +
-                                            intermediateNode.isIntersection() + "\n");
-                        }
-                        previousNetworkNode = intermediateNode;
+                        if (breakOuterLoop) break;
                     }
 
-                    for (int i = nodeSequenceTraversed.size() - 1; i >= 0; i--) {
-                        intermediateNode = nodeSequenceTraversed.get(i);
-                        boolean isIntersection = false;
-                        long linkIdToCheckClass = 0L;
-
-                        if (previousNetworkNode != null) {
-                            boolean breakOuterLoop = false;
-                            for (Long linkIdFromPreviousNode : previousNetworkNode.getLinkIdList()) {
-                                for (Long linkIdFromCurrentNode : intermediateNode.getLinkIdList()) {
-                                    if (Objects.equals(linkIdFromPreviousNode, linkIdFromCurrentNode)) {
-                                        osmWayIdToAscribe = links.get(linkIdFromPreviousNode).getOsmWayId();
-                                        distanceFromPreviousFeatureM = links.get(linkIdFromPreviousNode).
-                                                getlinkLengthM();
-
-                                        linkIdToCheckClass = linkIdFromPreviousNode;
-                                        breakOuterLoop = true;
-                                    }
-                                }
-                                if (breakOuterLoop) break;
-                            }
-
-                            if (previousNetworkNode.getOsmWayIdAscribedForRoute() != osmWayIdToAscribe) {
-                                if (!Objects.equals(links.get(linkIdToCheckClass).getLinkType(), "service")) {
-                                    isIntersection = true;
-                                }
-                            }
+                    if (previousPathNode.getOsmWayIdAscribedForRoute() != osmWayIdToAscribe) {
+                        if (!Objects.equals(links.get(linkIdToCheckClass).getLinkType(), "service")) {
+                            isIntersection = true;
                         }
+                    }
 
-                        intermediateNode.setPreviousGPSNodeId(previousNode.getGPSNodeId());
-                        intermediateNode.setNextGPSNodeId(gPSNode.getGPSNodeId());
-                        intermediateNode.setPreviousGPSNodeLongitude(previousNode.getGPSNodeLongitude());
-                        intermediateNode.setPreviousGPSNodeLatitude(previousNode.getGPSNodeLatitude());
-                        intermediateNode.setPreviousGPSNodeDateTime(previousNode.getDateTimeStamp());
-                        intermediateNode.setNextGPSNodeDateTime(gPSNode.getDateTimeStamp());
-                        intermediateNode.setNextGPSNodeLongitude(gPSNode.getGPSNodeLongitude());
-                        intermediateNode.setNextGPSNodeLatitude(gPSNode.getGPSNodeLatitude());
-                        intermediateNode.setPreviousGPSNodeAtDepot(previousNode.getgPSNodeAtDepot());
-                        intermediateNode.setPreviousGPSNodeAtDepotLag(previousNode.getgPSNodeAtDepotLag());
-                        intermediateNode.setPreviousGPSNodeAtDepotNext(previousNode.getgPSNodeAtDepotNext());
-                        intermediateNode.setPreviousGPSNodeHubStay(previousNode.getgPSNodeHubStay());
-                        intermediateNode.setPreviousGPSNodeHubStart(previousNode.getgPSNodeHubStart());
-                        intermediateNode.setPreviousGPSNodeHubStop(previousNode.getgPSNodeHubStop());
-                        intermediateNode.setTourNumber(previousNode.getgPSNodeTourNumber());
-                        // System.out.println(nodeSequenceCounter + "," + previousNode.getgPSNodeTourNumber());
-                        intermediateNode.setPreviousGPSNodeIsStop(previousNode.getgPSNodeIsStop());
-                        intermediateNode.setOsmWayIdAscribedForRoute(osmWayIdToAscribe);
-                        intermediateNode.setDistanceToPreviousNetworkNode(distanceFromPreviousFeatureM);
-                        intermediateNode.setIsIntersection(isIntersection);
+                    intermediateNode.setPreviousGPSNodeId(previousGPSNode.getGPSNodeId());
+                    intermediateNode.setNextGPSNodeId(gPSNode.getGPSNodeId());
+                    intermediateNode.setPreviousGPSNodeLongitude(previousGPSNode.getGPSNodeLongitude());
+                    intermediateNode.setPreviousGPSNodeLatitude(previousGPSNode.getGPSNodeLatitude());
+                    intermediateNode.setPreviousGPSNodeDateTime(previousGPSNode.getDateTimeStamp());
+                    intermediateNode.setNextGPSNodeDateTime(gPSNode.getDateTimeStamp());
+                    intermediateNode.setNextGPSNodeLongitude(gPSNode.getGPSNodeLongitude());
+                    intermediateNode.setNextGPSNodeLatitude(gPSNode.getGPSNodeLatitude());
+                    intermediateNode.setPreviousGPSNodeAtDepot(previousGPSNode.getgPSNodeAtDepot());
+                    intermediateNode.setPreviousGPSNodeAtDepotLag(previousGPSNode.getgPSNodeAtDepotLag());
+                    intermediateNode.setPreviousGPSNodeAtDepotNext(previousGPSNode.getgPSNodeAtDepotNext());
+                    intermediateNode.setPreviousGPSNodeHubStay(previousGPSNode.getgPSNodeHubStay());
+                    intermediateNode.setPreviousGPSNodeHubStart(previousGPSNode.getgPSNodeHubStart());
+                    intermediateNode.setPreviousGPSNodeHubStop(previousGPSNode.getgPSNodeHubStop());
+                    intermediateNode.setTourNumber(previousGPSNode.getgPSNodeTourNumber());
+                    // System.out.println(pathNodeFeatureId + "," + previousGPSNode.getgPSNodeTourNumber());
+                    intermediateNode.setPreviousGPSNodeIsStop(previousGPSNode.getgPSNodeIsStop());
+                    intermediateNode.setOsmWayIdAscribedForRoute(osmWayIdToAscribe);
+                    intermediateNode.setDistanceToPreviousNetworkNode(distanceFromPreviousFeatureM);
+                    intermediateNode.setIsIntersection(isIntersection);
 
-                        pathSequenceNodes.put(++nodeSequenceCounter, intermediateNode);
+                    gPSPointPathSequenceNodes.put(++pathNodeFeatureId, intermediateNode);
                         /* Debugging statement:
-                        System.out.println(nodeSequenceCounter + "----" + pathSequenceNodes.get(nodeSequenceCounter));
-                        if (nodeSequenceCounter % 301_221 == 0) {
+                        System.out.println(pathNodeFeatureId + "----" + gPSPointPathSequenceNodes.get(pathNodeFeatureId));
+                        if (pathNodeFeatureId % 301_221 == 0) {
                             System.exit(007);
                         }
                         */
 
-                        if (gPSNode.getgPSNodeTourNumber() <= 1032) {   // todo earlier is was nodeSequenceCounter % 301_122
-                            pathNodeWriter.write(
-                                    (nodeSequenceCounter - 1) + "," +
-                                            intermediateNode.getNodeId() + "," +
-                                            intermediateNode.getNodeLongitude() + "," +
-                                            intermediateNode.getNodeLatitude() + "," +
-                                            intermediateNode.getPreviousGPSNodeId() + "," +
-                                            intermediateNode.getNextGPSNodeId() + "," +
-                                            intermediateNode.getPreviousGPSNodeLongitude() + "," +
-                                            intermediateNode.getPreviousGPSNodeLatitude() + "," +
-                                            intermediateNode.getNextGPSNodeLongitude() + "," +
-                                            intermediateNode.getNextGPSNodeLatitude() + "," +
-                                            intermediateNode.getPreviousGPSNodeDateTime() + "," +
-                                            intermediateNode.getNextGPSNodeDateTime() + "," +
-                                            intermediateNode.getPreviousGPSNodeAtDepot() + "," +
-                                            intermediateNode.getPreviousGPSNodeAtDepotLag() + "," +
-                                            intermediateNode.getPreviousGPSNodeAtDepotNext() + "," +
-                                            intermediateNode.getPreviousGPSNodeHubStay() + "," +
-                                            intermediateNode.getPreviousGPSNodeHubStart() + "," +
-                                            intermediateNode.getPreviousGPSNodeHubStop() + "," +
-                                            intermediateNode.getTourNumber() + "," +
-                                            intermediateNode.getPreviousGPSNodeIsStop() + "," +
-                                            intermediateNode.getOsmWayIdAscribedForRoute() + "," +
-                                            intermediateNode.getDistanceToPreviousNetworkNode() + "," +
-                                            intermediateNode.isIntersection() + "\n");
-                        }
-                        previousNetworkNode = intermediateNode;
+                    if (gPSNode.getgPSNodeTourNumber() <= 1032) {
+                        pathNodeWriter.write(
+                                (pathNodeFeatureId - 1) + "," +
+                                        intermediateNode.getNodeId() + "," +
+                                        intermediateNode.getNodeLongitude() + "," +
+                                        intermediateNode.getNodeLatitude() + "," +
+                                        intermediateNode.getPreviousGPSNodeId() + "," +
+                                        intermediateNode.getNextGPSNodeId() + "," +
+                                        intermediateNode.getPreviousGPSNodeLongitude() + "," +
+                                        intermediateNode.getPreviousGPSNodeLatitude() + "," +
+                                        intermediateNode.getNextGPSNodeLongitude() + "," +
+                                        intermediateNode.getNextGPSNodeLatitude() + "," +
+                                        intermediateNode.getPreviousGPSNodeDateTime() + "," +
+                                        intermediateNode.getNextGPSNodeDateTime() + "," +
+                                        intermediateNode.getPreviousGPSNodeAtDepot() + "," +
+                                        intermediateNode.getPreviousGPSNodeAtDepotLag() + "," +
+                                        intermediateNode.getPreviousGPSNodeAtDepotNext() + "," +
+                                        intermediateNode.getPreviousGPSNodeHubStay() + "," +
+                                        intermediateNode.getPreviousGPSNodeHubStart() + "," +
+                                        intermediateNode.getPreviousGPSNodeHubStop() + "," +
+                                        intermediateNode.getTourNumber() + "," +
+                                        intermediateNode.getPreviousGPSNodeIsStop() + "," +
+                                        intermediateNode.getOsmWayIdAscribedForRoute() + "," +
+                                        intermediateNode.getDistanceToPreviousNetworkNode() + "," +
+                                        intermediateNode.isIntersection() + "\n");
                     }
+                    previousPathNode = intermediateNode;
                 }
-                previousNode = gPSNode;
+                previousGPSNode = gPSNode;
+
+                pathNodeWriter.flush();
+                pathNodeWriter.close();
+                System.out.println("Path nodes written to: " + pathNodesFilePath);
             }
-
-            pathNodeWriter.flush();
-            pathNodeWriter.close();
-            System.out.println("Path nodes written to: " + pathNodesFilePath);
-
         } catch (IOException iOE) {
             System.out.println("Input-output exception. Please check the path nodes hashmap.");
             iOE.printStackTrace();
         }
 
-        /* Debugging statements:
-        for (Node intermediateNode : pathSequenceNodes.values()) {
-            System.out.println("Intermediate node details: " +
-                    intermediateNode.getPreviousGPSNodeId() + "," +
-                    intermediateNode.getPreviousGPSNodeId() + "," +
-                    intermediateNode.getPreviousGPSNodeLongitude() + "," +
-                    intermediateNode.getPreviousGPSNodeLatitude() + "," +
-                    intermediateNode.getNextGPSNodeLongitude() + "," +
-                    intermediateNode.getNextGPSNodeLatitude() + "," +
-                    intermediateNode.getPreviousGPSNodeAtDepot() + "," +
-                    intermediateNode.getPreviousGPSNodeAtDepotLag() + "," +
-                    intermediateNode.getPreviousGPSNodeAtDepotNext() + "," +
-                    intermediateNode.getPreviousGPSNodeHubStay() + "," +
-                    intermediateNode.getPreviousGPSNodeHubStart() + "," +
-                    intermediateNode.getPreviousGPSNodeHubStop() + "," +
-                    intermediateNode.getTourNumber() + "," +
-                    intermediateNode.getPreviousGPSNodeIsStop() + "," +
-                    intermediateNode.getOsmWayIdAscribedForRoute() + "," +
-                    intermediateNode.getDistanceToPreviousNetworkNode());
-
-            if (nodeSequenceCounter % 500 == 0) {
-                System.exit(23);
-            }
-        }
-        */
-
-        /* Debugging statement: TODO: Most important debugging step thus far
-        for (int i = 1; i < pathSequenceNodes.size(); i++) {
-            System.out.println(i + "----" + pathSequenceNodes.get(i));
+        /* Debugging statement: Most important debugging step thus far
+        for (int i = 1; i < gPSPointPathSequenceNodes.size(); i++) {
+            System.out.println(i + "----" + gPSPointPathSequenceNodes.get(i));
             if (i % 5000 == 0) {
                 System.exit(007);
             }
         }
         */
 
-            writeSnappedGPSNodes(snappedGPSNodesFilePath, gPSNodes);
-            writePathNodes(pathNodesFilePath, pathSequenceNodes);
-        }
+        System.out.println(gPSPointPathSequenceNodes.size());
+        writeSnappedGPSNodes(snappedGPSNodesFilePath, gPSNodes);
+        developOptimalPathNodeSequence(gPSNodes, gPSPointIsStopPathSequenceNodes, links, nodes, kDTreeForDijkstra);
+        writeStopPointShortestPathNodes(gPSPointIsStopPathSequenceNodes, shortestPathNodesFilePath);
+    }
 
     // Calculate emission probabilities for a GPS node and candidate state (network) nodes
     private static ArrayList<Double> calculateEmissionProbabilities(GPSNode gPSNode) {
         ArrayList<NetworkNode> candidateStateNodes = gPSNode.getCandidateStateNodes();
         ArrayList<Double> emissionProbabilities = new ArrayList<>();
-        int scalingParameter = 70;
+        int scalingParameter = 70;  // Distance beyond which sharp decay occurs
 
         for (NetworkNode candidateStateNode : candidateStateNodes) {
             double interPointDistance = calculateEuclideanDistance(gPSNode, candidateStateNode);
@@ -377,8 +346,7 @@ public class RouteAligningAlgorithm {
     private static ArrayList<Double> calculateTransitionProbabilities(NetworkNode fromCandidateState,
                                                                       ArrayList<NetworkNode> toCandidateStates,
                                                                       LinkedHashMap<Long, ArrayList<Long>>
-                                                                              connectivityMatrix)
-    {
+                                                                              connectivityMatrix) {
         ArrayList<Double> transitionProbabilities = new ArrayList<>();
         int scalingParameter = 70;
 
@@ -402,7 +370,7 @@ public class RouteAligningAlgorithm {
 
     // Determine the distance between a GPS node and a network node
     private static double calculateEuclideanDistance(GPSNode gPSNode, NetworkNode networkNode) {
-        double interPointDistance = 7;
+        double interPointDistance;
         int radiusOfEarthM = 6_371_000;
 
         double xDifferential = (networkNode.getNetworkNodeLongitude() - gPSNode.getGPSNodeLongitude()) *
@@ -465,9 +433,157 @@ public class RouteAligningAlgorithm {
         }
     }
 
-    // Write out the pathfinding nodes
-    private static void writePathNodes(String pathNodesOutputFilePath, LinkedHashMap<Integer, Node> nodesForSequencing)
-    {
+    // Handle the development of optimal path sequence nodes
+    private static void developOptimalPathNodeSequence(LinkedHashMap<Long, GPSNode> gPSNodes,
+                                                       LinkedHashMap<Integer, Node> stopPointShortestPathNodes,
+                                                       LinkedHashMap<Long, Link> links,
+                                                       LinkedHashMap<Long, Node> nodes,
+                                                       KDTreeForNodes kDTreeForNodes) {
 
+        GPSNode previousIsStopNode = null;
+        int nodeSequenceCounter = 0;
+        Node previousOptimalPathNode = null;
+        long osmWayIdToAscribe = 0;
+        double distanceToPreviousFeature = 0;
+
+        for (GPSNode gPSNode : gPSNodes.values()) {
+            if (gPSNode.getgPSNodeIsStop().equalsIgnoreCase("TRUE")) {
+                previousIsStopNode = gPSNode;
+                break;
+            }
+        }
+
+        for (GPSNode gPSNode : gPSNodes.values()) {
+            if (((gPSNode.getgPSNodeIsStop().equalsIgnoreCase("TRUE")) || (gPSNode.getgPSNodeHubStart().
+                    equalsIgnoreCase("TRUE"))) && (gPSNode != previousIsStopNode)) {
+                DijkstraBasedRouter dijkstraBasedRouter = new DijkstraBasedRouter();
+                assert previousIsStopNode != null;
+                Node originNode = kDTreeForNodes.findNearestNode(previousIsStopNode.getMatchedNodeLongitude(),
+                        previousIsStopNode.getMatchedNodeLatitude());
+                Node destinationNode = kDTreeForNodes.findNearestNode(gPSNode.getMatchedNodeLongitude(),
+                        gPSNode.getMatchedNodeLatitude());
+                double lengthOfShortestPath = dijkstraBasedRouter.findShortestDrivingPathLengthM(originNode.getNodeId(),
+                        destinationNode.getNodeId(), nodes, links);
+                ArrayList<Node> nodeListForTraversal = dijkstraBasedRouter.createNodeListForTraversal(
+                        originNode.getNodeId(), destinationNode.getNodeId(), nodes);
+
+                if (nodeListForTraversal.isEmpty()) {
+                    nodeListForTraversal.add(kDTreeForNodes.findNearestNode(previousIsStopNode.getGPSNodeLongitude(),
+                            previousIsStopNode.getGPSNodeLatitude()));
+                }
+
+                for (int i = nodeListForTraversal.size() - 1; i >= 0; i--) {
+                    Node nodeInOptimalPath = nodeListForTraversal.get(i);
+                    nodeInOptimalPath.setPreviousGPSNodeId(previousIsStopNode.getGPSNodeId());
+                    nodeInOptimalPath.setNextGPSNodeId(gPSNode.getGPSNodeId());
+                    nodeInOptimalPath.setPreviousGPSNodeLongitude(previousIsStopNode.getGPSNodeLongitude());
+                    nodeInOptimalPath.setPreviousGPSNodeLatitude(previousIsStopNode.getGPSNodeLatitude());
+                    nodeInOptimalPath.setPreviousGPSNodeDateTime(previousIsStopNode.getDateTimeStamp());
+                    nodeInOptimalPath.setNextGPSNodeDateTime(gPSNode.getDateTimeStamp());
+                    nodeInOptimalPath.setNextGPSNodeLongitude(gPSNode.getGPSNodeLongitude());
+                    nodeInOptimalPath.setNextGPSNodeLatitude(gPSNode.getGPSNodeLatitude());
+                    nodeInOptimalPath.setPreviousGPSNodeAtDepot(previousIsStopNode.getgPSNodeAtDepot());
+                    nodeInOptimalPath.setPreviousGPSNodeAtDepotLag(previousIsStopNode.getgPSNodeAtDepotLag());
+                    nodeInOptimalPath.setPreviousGPSNodeAtDepotNext(previousIsStopNode.getgPSNodeAtDepotNext());
+                    nodeInOptimalPath.setPreviousGPSNodeHubStay(previousIsStopNode.getgPSNodeHubStay());
+                    nodeInOptimalPath.setPreviousGPSNodeHubStart(previousIsStopNode.getgPSNodeHubStart());
+                    nodeInOptimalPath.setPreviousGPSNodeHubStop(previousIsStopNode.getgPSNodeHubStop());
+                    nodeInOptimalPath.setTourNumber(previousIsStopNode.getgPSNodeTourNumber());
+                    nodeInOptimalPath.setPreviousGPSNodeIsStop(previousIsStopNode.getgPSNodeIsStop());
+
+                    long linkIdForIntersection = 0;
+                    if (previousOptimalPathNode != null) {
+                        for (Long osmLinkIdFromPreviousOptimalNode : previousOptimalPathNode.getLinkIdList()) {
+                            for (Long osmLinkIdFromCurrentOptimalNode : nodeInOptimalPath.getLinkIdList()) {
+                                if (Objects.equals(osmLinkIdFromPreviousOptimalNode, osmLinkIdFromCurrentOptimalNode)) {
+                                    linkIdForIntersection = osmLinkIdFromCurrentOptimalNode;
+                                    osmWayIdToAscribe = links.get(osmLinkIdFromCurrentOptimalNode).getOsmWayId();
+                                    distanceToPreviousFeature = links.get(osmLinkIdFromCurrentOptimalNode).
+                                            getlinkLengthM();
+                                }
+                            }
+                        }
+                    }
+                    nodeInOptimalPath.setDistanceToPreviousNetworkNode(distanceToPreviousFeature);
+                    nodeInOptimalPath.setOsmWayIdAscribedForRoute(osmWayIdToAscribe);
+
+                    boolean isIntersection = false;
+                    if (previousOptimalPathNode != null) {
+                        if (!Objects.equals(previousOptimalPathNode.getOsmWayIdAscribedForRoute(), osmWayIdToAscribe)) {
+                            nodeInOptimalPath.setIsIntersection(!links.get(linkIdForIntersection).getLinkType().
+                                    equalsIgnoreCase("service"));
+                        } else {
+                            nodeInOptimalPath.setIsIntersection(false);
+                        }
+                    }
+
+                    stopPointShortestPathNodes.put(++nodeSequenceCounter, nodeInOptimalPath);
+                    previousOptimalPathNode = nodeInOptimalPath;
+                }
+
+                previousIsStopNode = gPSNode;
+            }
+        }
+        System.out.println("Optimal paths' node sequence established.");
+    }
+
+    // Write out the optimal sequence of nodes based on the list of acquired stop points
+    public static void writeStopPointShortestPathNodes(LinkedHashMap<Integer, Node> stopPointSequence,
+                                                       String stopPointOptimalSequenceFilePath) {
+        System.out.println(stopPointSequence.size());
+        try {
+            // initialize a writer
+            BufferedWriter optimalPathNodeSequenceWriter = new BufferedWriter(new FileWriter(
+                    stopPointOptimalSequenceFilePath));
+
+            // Write the header array
+            optimalPathNodeSequenceWriter.write("FeatureId,OSMNodeId,FeatureLongitude,FeatureLatitude," +
+                    "FromGPSPointId,ToGPSPointId,FromGPSPointLongitude,FromGPSPointLatitude,ToGPSPointLongitude," +
+                    "ToGPSPointLatitude,FromGPSPointDateTime,ToGPSPointDateTime,FromGPSPointAtDepot," +
+                    "FromGPSPointAtDepotLag,FromGPSPointAtDepotNext,FromGPSPointHubStay,FromGPSPointHubStart," +
+                    "FromGPSPointHubStop,FromGPSPointTourNumber,FromGPSPointIsStop,OSMWayId," +
+                    "DistanceFromPreviousFeature,IsIntersection\n");
+
+            // Write out the data body
+            for (HashMap.Entry<Integer, Node> optimalPathNodeEntry : stopPointSequence.entrySet()) {
+                int pathSequenceNodeId = optimalPathNodeEntry.getKey();
+                Node pathSequenceNode = optimalPathNodeEntry.getValue();
+                optimalPathNodeSequenceWriter.write(pathSequenceNodeId + "," +
+                        pathSequenceNode.getNodeId() + "," +
+                        pathSequenceNode.getNodeLongitude() + "," +
+                        pathSequenceNode.getNodeLatitude() + "," +
+                        pathSequenceNode.getPreviousGPSNodeId() + "," +
+                        pathSequenceNode.getNextGPSNodeId() + "," +
+                        pathSequenceNode.getPreviousGPSNodeLongitude() + "," +
+                        pathSequenceNode.getPreviousGPSNodeLatitude() + "," +
+                        pathSequenceNode.getNextGPSNodeLongitude() + "," +
+                        pathSequenceNode.getNextGPSNodeLatitude() + "," +
+                        pathSequenceNode.getPreviousGPSNodeDateTime() + "," +
+                        pathSequenceNode.getNextGPSNodeDateTime() + "," +
+                        pathSequenceNode.getPreviousGPSNodeAtDepot() + "," +
+                        pathSequenceNode.getPreviousGPSNodeAtDepotLag() + "," +
+                        pathSequenceNode.getPreviousGPSNodeAtDepotNext() + "," +
+                        pathSequenceNode.getPreviousGPSNodeHubStay() + "," +
+                        pathSequenceNode.getPreviousGPSNodeHubStart() + "," +
+                        pathSequenceNode.getPreviousGPSNodeHubStop() + "," +
+                        pathSequenceNode.getTourNumber() + "," +
+                        pathSequenceNode.getPreviousGPSNodeIsStop() + "," +
+                        pathSequenceNode.getOsmWayIdAscribedForRoute() + "," +
+                        pathSequenceNode.getDistanceToPreviousNetworkNode() + "," +
+                        pathSequenceNode.isIntersection() +
+                        "\n");
+            }
+
+            // Close writing activity
+            optimalPathNodeSequenceWriter.flush();
+            optimalPathNodeSequenceWriter.close();
+            System.out.println("Node sequence of optimal paths between stop points written out to " +
+                    stopPointOptimalSequenceFilePath);
+
+
+        } catch (IOException iOE) {
+            System.out.println("Input-output exception. Please check the optimal paths' node sequence hashmap.");
+            iOE.printStackTrace();
+        }
     }
 }

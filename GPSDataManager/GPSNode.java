@@ -2,7 +2,6 @@ package GPSDataManager;
 
 import OSMDataManager.NetworkNode;
 
-import java.lang.reflect.Array;
 import java.util.ArrayList;
 
 public class GPSNode {
@@ -54,7 +53,7 @@ public class GPSNode {
     public void setMatchedNodeElevationM(double matchedNodeElevationM) {
         this.matchedNodeElevationM = matchedNodeElevationM;
     }
-    public void setDistanceFromPreviousPointM(double distanceFromPreviousPointM) {
+    public void setDistanceFromPreviousGPSPointM(double distanceFromPreviousPointM) {
         this.distanceFromPreviousPointM = distanceFromPreviousPointM;
     }
     public void setMatchedNodeOsmWayId(Long matchedNodeOsmWayId) {
