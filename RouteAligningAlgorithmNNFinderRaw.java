@@ -18,19 +18,19 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.util.*;
 
-public class RouteAligningAlgorithm {
+public class RouteAligningAlgorithmNNFinderRaw {
     public static void main(String[] args) {
         String gPSNodesFilePath = "E:/anirudh/CargoBikeProject/RawData/GPSData/2024-09-04_GPSrecords_edited.csv";
         String hMMNodesFilePath = "E:/anirudh/CargoBikeProject/RawData/Osmium/" +
                 "OSMRoadNetworkForCargoBikes1mPointsHMM.csv";
         // String dijkstraLinksFilePath = "E:/anirudh/CargoBikeProject/Results/dijkstraLinks.csv";
         // String dijkstraNodesFilePath = "E:/anirudh/CargoBikeProject/Results/dijkstraNodes.csv";
-        int numberNeighbouringNetworkNodesCompared = 70;
+        int numberNeighbouringNetworkNodesCompared = 1;
         String routingNetworkFilePath = "E:/anirudh/CargoBikeProject/RawData/Osmium/" +
                 "planet_11.229,48_11.914,48.278.osm.opl";
-        String snappedGPSNodesFilePath = "E:/anirudh/CargoBikeProject/Results/gPSNodesSnapped.csv";
-        String pathNodesFilePath = "E:/anirudh/CargoBikeProject/Results/pathNodes.csv";
-        String shortestPathNodesFilePath = "E:/anirudh/CargoBikeProject/Results/shortestPathNodes.csv";
+        String snappedGPSNodesFilePath = "E:/anirudh/CargoBikeProject/Results/gPSNodesSnappedNNFinder.csv";
+        String pathNodesFilePath = "E:/anirudh/CargoBikeProject/Results/pathNodesNNFinder.csv";
+        String shortestPathNodesFilePath = "E:/anirudh/CargoBikeProject/Results/shortestPathNodesNNFinder.csv";
 
         // Load all GPS nodes to be snapped
         GPSNodeReaderWriter gpsNodeReaderWriter = new GPSNodeReaderWriter();
@@ -73,45 +73,13 @@ public class RouteAligningAlgorithm {
             // System.out.println("GPS node ID: " + gPSNode.getGPSNodeId());    // Debugging statement
             List<NetworkNode> candidateStateNodes = kdTreeBuilderSearcher.findNearestNodes(gPSNode.
                     getGPSNodeLongitude(), gPSNode.getGPSNodeLatitude(), numberNeighbouringNetworkNodesCompared);
-            gPSNode.getCandidateStateNodes().addAll(candidateStateNodes);
-            gPSNode.setEmissionProbabilities(calculateEmissionProbabilities(gPSNode));
 
-            ArrayList<Double> emissionProbabilities = gPSNode.getEmissionProbabilities();
-            double maximumJointProbability = -1;    // Set to -1 from 0; algorithmic intervention
-            int indexOfSelectedState = 0;
-
-            if (previousState != null) {
-                ArrayList<Double> transitionProbabilities = calculateTransitionProbabilities(previousState,
-                        gPSNode.getCandidateStateNodes(), connectivityMatrix);
-                for (int i = 0; i < candidateStateNodes.size(); i++) {
-                    double jointProbability = emissionProbabilities.get(i) * transitionProbabilities.get(i);
-                    /* Debugging statements:
-                    jointProbabilityCounter++;
-                    System.out.println(jointProbability);
-                    */
-                    if (jointProbability >= maximumJointProbability) {
-                        maximumJointProbability = jointProbability;
-                        indexOfSelectedState = i;
-                    }
-                }
-            } else {
-                for (int i = 0; i < candidateStateNodes.size(); i++) {
-                    double startingProbability = emissionProbabilities.get(i);
-                    // System.out.println(startingProbability);
-                    if (startingProbability >= maximumJointProbability) {
-                        maximumJointProbability = startingProbability;
-                        indexOfSelectedState = i;
-                    }
-                }
-            }
-
-            NetworkNode currentState = candidateStateNodes.get(indexOfSelectedState);
-            gPSNode.setMatchedNodeLongitude(currentState.getNetworkNodeLongitude());
-            gPSNode.setMatchedNodeLatitude(currentState.getNetworkNodeLatitude());
-            gPSNode.setMatchedNodeOsmWayId(currentState.getRoadOsmId());
-            gPSNode.setJointProbability(maximumJointProbability);
+            NetworkNode nearestNetworkNode = candidateStateNodes.get(0);
+            gPSNode.setMatchedNodeLongitude(nearestNetworkNode.getNetworkNodeLongitude());
+            gPSNode.setMatchedNodeLatitude(nearestNetworkNode.getNetworkNodeLatitude());
+            gPSNode.setMatchedNodeOsmWayId(nearestNetworkNode.getRoadOsmId());
+            gPSNode.setJointProbability(1);
             gPSNode.setMatchedNodeElevationM(0);
-            previousState = currentState;
         }
 
         // Route between different network nodes (states) and feed the sequencing arraylists to the master map
@@ -193,28 +161,28 @@ public class RouteAligningAlgorithm {
                     if (gPSNode.getgPSNodeTourNumber() <= 1032) {
                         pathNodeWriter.write(
                                 (pathNodeFeatureId - 1) + "," +
-                                    intermediateNode.getNodeId() + "," +
-                                    intermediateNode.getNodeLongitude() + "," +
-                                    intermediateNode.getNodeLatitude() + "," +
-                                    intermediateNode.getPreviousGPSNodeId() + "," +
-                                    intermediateNode.getNextGPSNodeId() + "," +
-                                    intermediateNode.getPreviousGPSNodeLongitude() + "," +
-                                    intermediateNode.getPreviousGPSNodeLatitude() + "," +
-                                    intermediateNode.getNextGPSNodeLongitude() + "," +
-                                    intermediateNode.getNextGPSNodeLatitude() + "," +
-                                    intermediateNode.getPreviousGPSNodeDateTime() + "," +
-                                    intermediateNode.getNextGPSNodeDateTime() + "," +
-                                    intermediateNode.getPreviousGPSNodeAtDepot() + "," +
-                                    intermediateNode.getPreviousGPSNodeAtDepotLag() + "," +
-                                    intermediateNode.getPreviousGPSNodeAtDepotNext() + "," +
-                                    intermediateNode.getPreviousGPSNodeHubStay() + "," +
-                                    intermediateNode.getPreviousGPSNodeHubStart() + "," +
-                                    intermediateNode.getPreviousGPSNodeHubStop() + "," +
-                                    intermediateNode.getTourNumber() + "," +
-                                    intermediateNode.getPreviousGPSNodeIsStop() + "," +
-                                    intermediateNode.getOsmWayIdAscribedForRoute() + "," +
-                                    intermediateNode.getDistanceToPreviousNetworkNode() + "," +
-                                    intermediateNode.isIntersection() + "\n");
+                                        intermediateNode.getNodeId() + "," +
+                                        intermediateNode.getNodeLongitude() + "," +
+                                        intermediateNode.getNodeLatitude() + "," +
+                                        intermediateNode.getPreviousGPSNodeId() + "," +
+                                        intermediateNode.getNextGPSNodeId() + "," +
+                                        intermediateNode.getPreviousGPSNodeLongitude() + "," +
+                                        intermediateNode.getPreviousGPSNodeLatitude() + "," +
+                                        intermediateNode.getNextGPSNodeLongitude() + "," +
+                                        intermediateNode.getNextGPSNodeLatitude() + "," +
+                                        intermediateNode.getPreviousGPSNodeDateTime() + "," +
+                                        intermediateNode.getNextGPSNodeDateTime() + "," +
+                                        intermediateNode.getPreviousGPSNodeAtDepot() + "," +
+                                        intermediateNode.getPreviousGPSNodeAtDepotLag() + "," +
+                                        intermediateNode.getPreviousGPSNodeAtDepotNext() + "," +
+                                        intermediateNode.getPreviousGPSNodeHubStay() + "," +
+                                        intermediateNode.getPreviousGPSNodeHubStart() + "," +
+                                        intermediateNode.getPreviousGPSNodeHubStop() + "," +
+                                        intermediateNode.getTourNumber() + "," +
+                                        intermediateNode.getPreviousGPSNodeIsStop() + "," +
+                                        intermediateNode.getOsmWayIdAscribedForRoute() + "," +
+                                        intermediateNode.getDistanceToPreviousNetworkNode() + "," +
+                                        intermediateNode.isIntersection() + "\n");
                     }
                     previousPathNode = intermediateNode;
                 }
@@ -239,7 +207,11 @@ public class RouteAligningAlgorithm {
                     }
 
                     if (previousPathNode.getOsmWayIdAscribedForRoute() != osmWayIdToAscribe) {
-                        if (!Objects.equals(links.get(linkIdToCheckClass).getLinkType(), "service")) {
+                        if (!((Objects.equals(links.get(linkIdToCheckClass).getLinkType(), "service")) &&
+                                (Objects.equals(links.get(linkIdToCheckClass).getLinkType(), "steps")) &&
+                                (Objects.equals(links.get(linkIdToCheckClass).getLinkType(), "path")) &&
+                                (Objects.equals(links.get(linkIdToCheckClass).getLinkType(), "footway")) &&
+                                (Objects.equals(links.get(linkIdToCheckClass).getLinkType(), "cycleway")))) {
                             isIntersection = true;
                         }
                     }
@@ -307,6 +279,7 @@ public class RouteAligningAlgorithm {
             pathNodeWriter.flush();
             pathNodeWriter.close();
             System.out.println("Path nodes written to: " + pathNodesFilePath);
+
         } catch (IOException iOE) {
             System.out.println("Input-output exception. Please check the path nodes hashmap.");
             iOE.printStackTrace();
